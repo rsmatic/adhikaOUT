@@ -13,12 +13,11 @@ public class Main {
     public static void main(String[] args) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(7000), 0);
 
-        // List users
         server.createContext("/users", exchange -> {
             String response;
             try (Connection conn = getConnection();
-                 Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery("SELECT userId, name FROM tbl_users")) {
+                    Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery("SELECT userId, name FROM tbl_users")) {
 
                 List<String> users = new ArrayList<>();
                 while (rs.next()) {
@@ -34,7 +33,6 @@ public class Main {
             sendResponse(exchange, 200, response);
         });
 
-        // Login endpoint
         server.createContext("/login", exchange -> {
             if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 sendResponse(exchange, 405, "{\"error\":\"Method Not Allowed\"}");
@@ -53,8 +51,8 @@ public class Main {
             }
 
             try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT userId, name FROM tbl_users WHERE name=? AND password=?")) {
+                    PreparedStatement stmt = conn.prepareStatement(
+                            "SELECT userId, name FROM tbl_users WHERE name=? AND password=?")) {
 
                 stmt.setString(1, username);
                 stmt.setString(2, password);
@@ -64,11 +62,11 @@ public class Main {
                     int id = rs.getInt("userId");
                     String name = rs.getString("name");
                     String response = String.format(
-                        "{\"success\":true,\"userId\":%d,\"name\":\"%s\"}", id, name);
+                            "{\"success\":true,\"userId\":%d,\"name\":\"%s\"}", id, name);
                     sendResponse(exchange, 200, response);
                 } else {
                     sendResponse(exchange, 401,
-                        "{\"success\":false,\"error\":\"Invalid credentials\"}");
+                            "{\"success\":false,\"error\":\"Invalid credentials\"}");
                 }
             } catch (Exception e) {
                 sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
@@ -79,8 +77,6 @@ public class Main {
         server.start();
     }
 
-    // ---------- helpers below ----------
-
     private static Connection getConnection() throws Exception {
         String url = dotenv.get("DB_URL");
         String user = dotenv.get("DB_USER");
@@ -89,18 +85,17 @@ public class Main {
         return DriverManager.getConnection(url, user, password);
     }
 
-private static void sendResponse(HttpExchange exchange, int statusCode, String response) {
-    try {
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(statusCode, response.getBytes().length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(response.getBytes());
+    private static void sendResponse(HttpExchange exchange, int statusCode, String response) {
+        try {
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(statusCode, response.getBytes().length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(response.getBytes());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-    } catch (Exception e) {
-        e.printStackTrace();
     }
-}
-
 
     private static Map<String, String> parseFormData(String body) {
         Map<String, String> params = new HashMap<>();
