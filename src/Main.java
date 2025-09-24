@@ -8,12 +8,27 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonDeserializer;
+import com.google.gson.JsonSerializer;
+import com.google.gson.JsonPrimitive;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import com.google.gson.reflect.TypeToken;
 import java.sql.*;
 import java.util.*;
 
 public class Main {
     private static Dotenv dotenv = Dotenv.load();
+
+    private static Gson gson = new GsonBuilder()
+        .registerTypeAdapter(LocalDateTime.class, (JsonSerializer<LocalDateTime>) (src, typeOfSrc, context) ->
+                new JsonPrimitive(src.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+        )
+        .registerTypeAdapter(LocalDateTime.class, (JsonDeserializer<LocalDateTime>) (json, type, context) ->
+                LocalDateTime.parse(json.getAsString(), DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        )
+        .create();
 
     public static void main(String[] args) throws Exception {
 
@@ -32,12 +47,20 @@ public class Main {
             }
 
             String path = exchange.getRequestURI().getPath();
-            if (path.equals("/employees")) {
-                handleEmployees(exchange);
-            } else if (path.startsWith("/employees/")) {
-                handleEmployeeById(exchange);
-            } else {
-                sendResponse(exchange, 404, "{\"error\":\"Not found\"}");
+            switch (path) {
+                case "/login":
+                    handleLogin(exchange);
+                    break;
+                case "/employees":
+                    handleEmployees(exchange);
+                    break;
+                default:
+                    if (path.startsWith("/employees/")) {
+                        handleEmployeeById(exchange);
+                    } else {
+                        sendResponse(exchange, 404, "{\"error\":\"Not found\"}");
+                    }
+                    break;
             }
         });
 
@@ -54,19 +77,23 @@ public class Main {
 
         try {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+            Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>() {
+            }.getType());
 
             String email = params.get("username");
             String password = params.get("password");
 
             try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "SELECT userId, email, password FROM tbl_users WHERE email=?")) {
+                    PreparedStatement stmt = conn.prepareStatement(
+                            "SELECT userId, email, password FROM tbl_users WHERE email=?")) {
                 stmt.setString(1, email);
                 ResultSet rs = stmt.executeQuery();
 
                 if (rs.next()) {
                     String hashedPassword = rs.getString("password");
+                    if (hashedPassword.startsWith("$2y$")) {
+                        hashedPassword = "$2a$" + hashedPassword.substring(4);
+                    }
                     if (BCrypt.checkpw(password, hashedPassword)) {
                         Map<String, Object> resp = new HashMap<>();
                         resp.put("success", true);
@@ -88,27 +115,36 @@ public class Main {
         try {
             if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
                 try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement("SELECT id, name, email FROM tbl_employee");
-                     ResultSet rs = stmt.executeQuery()) {
+                        PreparedStatement stmt = conn.prepareStatement("SELECT * FROM tbl_employee");
+                        ResultSet rs = stmt.executeQuery()) {
 
                     List<Map<String, Object>> employees = new ArrayList<>();
+                    ResultSetMetaData meta = rs.getMetaData();
+                    int columnCount = meta.getColumnCount();
+
                     while (rs.next()) {
                         Map<String, Object> emp = new HashMap<>();
-                        emp.put("id", rs.getInt("id"));
-                        emp.put("name", rs.getString("name"));
-                        emp.put("email", rs.getString("email"));
+                        for (int i = 1; i <= columnCount; i++) {
+                            String columnName = meta.getColumnName(i);
+                            Object value = rs.getObject(i);
+                            emp.put(columnName, value);
+                        }
                         employees.add(emp);
                     }
 
                     sendResponse(exchange, 200, gson.toJson(employees));
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
                 }
             } else if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>() {
+                }.getType());
 
                 try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement(
-                             "INSERT INTO tbl_employee(name,email) VALUES (?,?)", Statement.RETURN_GENERATED_KEYS)) {
+                        PreparedStatement stmt = conn.prepareStatement(
+                                "INSERT INTO tbl_employee(name,email) VALUES (?,?)", Statement.RETURN_GENERATED_KEYS)) {
 
                     stmt.setString(1, params.get("name"));
                     stmt.setString(2, params.get("email"));
@@ -140,7 +176,9 @@ public class Main {
         String path = exchange.getRequestURI().getPath();
         String idStr = path.substring("/employees/".length());
         int id;
-        try { id = Integer.parseInt(idStr); } catch (NumberFormatException e) {
+        try {
+            id = Integer.parseInt(idStr);
+        } catch (NumberFormatException e) {
             sendResponse(exchange, 400, "{\"error\":\"Invalid ID\"}");
             return;
         }
@@ -148,7 +186,8 @@ public class Main {
         try {
             if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
                 try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement("SELECT id, name, email FROM tbl_employee WHERE id=?")) {
+                        PreparedStatement stmt = conn
+                                .prepareStatement("SELECT id, name, email FROM tbl_employee WHERE id=?")) {
                     stmt.setInt(1, id);
                     ResultSet rs = stmt.executeQuery();
                     if (rs.next()) {
@@ -163,11 +202,12 @@ public class Main {
                 }
             } else if ("PUT".equalsIgnoreCase(exchange.getRequestMethod())) {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>() {
+                }.getType());
 
                 try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement(
-                             "UPDATE tbl_employee SET name=?, email=? WHERE id=?")) {
+                        PreparedStatement stmt = conn.prepareStatement(
+                                "UPDATE tbl_employee SET name=?, email=? WHERE id=?")) {
 
                     stmt.setString(1, params.get("name"));
                     stmt.setString(2, params.get("email"));
@@ -186,7 +226,7 @@ public class Main {
                 }
             } else if ("DELETE".equalsIgnoreCase(exchange.getRequestMethod())) {
                 try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement("DELETE FROM tbl_employee WHERE id=?")) {
+                        PreparedStatement stmt = conn.prepareStatement("DELETE FROM tbl_employee WHERE id=?")) {
 
                     stmt.setInt(1, id);
                     int affected = stmt.executeUpdate();
