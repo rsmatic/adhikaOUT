@@ -2,8 +2,13 @@ import io.github.cdimascio.dotenv.Dotenv;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 import java.net.InetSocketAddress;
+import org.mindrot.jbcrypt.BCrypt;
+
+import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import java.sql.*;
 import java.util.*;
 
@@ -11,70 +16,192 @@ public class Main {
     private static Dotenv dotenv = Dotenv.load();
 
     public static void main(String[] args) throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress(7000), 0);
 
-        server.createContext("/users", exchange -> {
-            String response;
-            try (Connection conn = getConnection();
-                    Statement stmt = conn.createStatement();
-                    ResultSet rs = stmt.executeQuery("SELECT userId, name FROM tbl_users")) {
+        int port = Integer.parseInt(dotenv.get("SERVER_PORT"));
 
-                List<String> users = new ArrayList<>();
-                while (rs.next()) {
-                    int id = rs.getInt("userId");
-                    String name = rs.getString("name");
-                    users.add("{\"userId\":" + id + ",\"name\":\"" + name + "\"}");
-                }
-                response = "[" + String.join(",", users) + "]";
-            } catch (Exception e) {
-                response = "{\"error\":\"" + e.getMessage() + "\"}";
-            }
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
 
-            sendResponse(exchange, 200, response);
-        });
+        server.createContext("/", exchange -> {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
 
-        server.createContext("/login", exchange -> {
-            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                sendResponse(exchange, 405, "{\"error\":\"Method Not Allowed\"}");
+            if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(204, -1);
                 return;
             }
 
-            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            Map<String, String> params = parseFormData(body);
+            String path = exchange.getRequestURI().getPath();
+            if (path.equals("/employees")) {
+                handleEmployees(exchange);
+            } else if (path.startsWith("/employees/")) {
+                handleEmployeeById(exchange);
+            } else {
+                sendResponse(exchange, 404, "{\"error\":\"Not found\"}");
+            }
+        });
 
-            String username = params.get("username");
+        server.setExecutor(null);
+        server.start();
+        System.out.println("Server started at http://localhost:" + dotenv.get("SERVER_PORT") + "/");
+    }
+
+    private static void handleLogin(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            sendResponse(exchange, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+
+        try {
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+
+            String email = params.get("username");
             String password = params.get("password");
 
-            if (username == null || password == null) {
-                sendResponse(exchange, 400, "{\"error\":\"Missing username or password\"}");
-                return;
-            }
-
             try (Connection conn = getConnection();
-                    PreparedStatement stmt = conn.prepareStatement(
-                            "SELECT userId, name FROM tbl_users WHERE name=? AND password=?")) {
-
-                stmt.setString(1, username);
-                stmt.setString(2, password);
-
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "SELECT userId, email, password FROM tbl_users WHERE email=?")) {
+                stmt.setString(1, email);
                 ResultSet rs = stmt.executeQuery();
-                if (rs.next()) {
-                    int id = rs.getInt("userId");
-                    String name = rs.getString("name");
-                    String response = String.format(
-                            "{\"success\":true,\"userId\":%d,\"name\":\"%s\"}", id, name);
-                    sendResponse(exchange, 200, response);
-                } else {
-                    sendResponse(exchange, 401,
-                            "{\"success\":false,\"error\":\"Invalid credentials\"}");
-                }
-            } catch (Exception e) {
-                sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
-            }
-        });
 
-        System.out.println("Server started at http://localhost:7000/");
-        server.start();
+                if (rs.next()) {
+                    String hashedPassword = rs.getString("password");
+                    if (BCrypt.checkpw(password, hashedPassword)) {
+                        Map<String, Object> resp = new HashMap<>();
+                        resp.put("success", true);
+                        resp.put("userId", rs.getInt("userId"));
+                        resp.put("email", rs.getString("email"));
+                        sendResponse(exchange, 200, gson.toJson(resp));
+                        return;
+                    }
+                }
+                sendResponse(exchange, 401, "{\"success\":false,\"error\":\"Invalid credentials\"}");
+            }
+
+        } catch (Exception e) {
+            sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+        }
+    }
+
+    private static void handleEmployees(HttpExchange exchange) throws IOException {
+        try {
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement("SELECT id, name, email FROM tbl_employee");
+                     ResultSet rs = stmt.executeQuery()) {
+
+                    List<Map<String, Object>> employees = new ArrayList<>();
+                    while (rs.next()) {
+                        Map<String, Object> emp = new HashMap<>();
+                        emp.put("id", rs.getInt("id"));
+                        emp.put("name", rs.getString("name"));
+                        emp.put("email", rs.getString("email"));
+                        employees.add(emp);
+                    }
+
+                    sendResponse(exchange, 200, gson.toJson(employees));
+                }
+            } else if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(
+                             "INSERT INTO tbl_employee(name,email) VALUES (?,?)", Statement.RETURN_GENERATED_KEYS)) {
+
+                    stmt.setString(1, params.get("name"));
+                    stmt.setString(2, params.get("email"));
+                    int affected = stmt.executeUpdate();
+
+                    if (affected > 0) {
+                        ResultSet keys = stmt.getGeneratedKeys();
+                        keys.next();
+                        int id = keys.getInt(1);
+                        Map<String, Object> emp = new HashMap<>();
+                        emp.put("id", id);
+                        emp.put("name", params.get("name"));
+                        emp.put("email", params.get("email"));
+                        sendResponse(exchange, 200, gson.toJson(emp));
+                    } else {
+                        sendResponse(exchange, 500, "{\"error\":\"Failed to create employee\"}");
+                    }
+                }
+            } else {
+                sendResponse(exchange, 405, "{\"error\":\"Method Not Allowed\"}");
+            }
+        } catch (Exception e) {
+            sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+        }
+    }
+
+    // Handle /employees/:id (GET, PUT, DELETE)
+    private static void handleEmployeeById(HttpExchange exchange) throws IOException {
+        String path = exchange.getRequestURI().getPath();
+        String idStr = path.substring("/employees/".length());
+        int id;
+        try { id = Integer.parseInt(idStr); } catch (NumberFormatException e) {
+            sendResponse(exchange, 400, "{\"error\":\"Invalid ID\"}");
+            return;
+        }
+
+        try {
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement("SELECT id, name, email FROM tbl_employee WHERE id=?")) {
+                    stmt.setInt(1, id);
+                    ResultSet rs = stmt.executeQuery();
+                    if (rs.next()) {
+                        Map<String, Object> emp = new HashMap<>();
+                        emp.put("id", rs.getInt("id"));
+                        emp.put("name", rs.getString("name"));
+                        emp.put("email", rs.getString("email"));
+                        sendResponse(exchange, 200, gson.toJson(emp));
+                    } else {
+                        sendResponse(exchange, 404, "{\"error\":\"Employee not found\"}");
+                    }
+                }
+            } else if ("PUT".equalsIgnoreCase(exchange.getRequestMethod())) {
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>(){}.getType());
+
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(
+                             "UPDATE tbl_employee SET name=?, email=? WHERE id=?")) {
+
+                    stmt.setString(1, params.get("name"));
+                    stmt.setString(2, params.get("email"));
+                    stmt.setInt(3, id);
+                    int affected = stmt.executeUpdate();
+
+                    if (affected > 0) {
+                        Map<String, Object> emp = new HashMap<>();
+                        emp.put("id", id);
+                        emp.put("name", params.get("name"));
+                        emp.put("email", params.get("email"));
+                        sendResponse(exchange, 200, gson.toJson(emp));
+                    } else {
+                        sendResponse(exchange, 404, "{\"error\":\"Employee not found\"}");
+                    }
+                }
+            } else if ("DELETE".equalsIgnoreCase(exchange.getRequestMethod())) {
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement("DELETE FROM tbl_employee WHERE id=?")) {
+
+                    stmt.setInt(1, id);
+                    int affected = stmt.executeUpdate();
+                    if (affected > 0) {
+                        sendResponse(exchange, 200, "{\"success\":true}");
+                    } else {
+                        sendResponse(exchange, 404, "{\"error\":\"Employee not found\"}");
+                    }
+                }
+            } else {
+                sendResponse(exchange, 405, "{\"error\":\"Method Not Allowed\"}");
+            }
+        } catch (Exception e) {
+            sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+        }
     }
 
     private static Connection getConnection() throws Exception {
@@ -85,15 +212,12 @@ public class Main {
         return DriverManager.getConnection(url, user, password);
     }
 
-    private static void sendResponse(HttpExchange exchange, int statusCode, String response) {
-        try {
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(statusCode, response.getBytes().length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(response.getBytes());
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+    private static void sendResponse(HttpExchange exchange, int status, String response) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        exchange.sendResponseHeaders(status, response.getBytes().length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(response.getBytes());
         }
     }
 
