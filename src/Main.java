@@ -131,8 +131,20 @@ public class Main {
                         Map<String, Object> emp = new HashMap<>();
                         for (int i = 1; i <= columnCount; i++) {
                             String columnName = meta.getColumnName(i);
+                            int columnType = meta.getColumnType(i);
                             Object value = rs.getObject(i);
-                            emp.put(columnName, value);
+                            switch (columnType) {
+                                case java.sql.Types.DATE:
+                                    if (value != null) {
+                                        java.sql.Date date = (java.sql.Date) value;
+                                        emp.put(columnName, date.toLocalDate().toString()); // yyyy-MM-dd
+                                    } else {
+                                        emp.put(columnName, null);
+                                    }
+                                    break;
+                                default:
+                                    emp.put(columnName, value);
+                            }
                         }
                         employees.add(emp);
                     }
