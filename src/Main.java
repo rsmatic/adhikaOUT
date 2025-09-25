@@ -66,7 +66,7 @@ public class Main {
 
         server.setExecutor(null);
         server.start();
-        System.out.println("Server started at http://localhost:" + dotenv.get("SERVER_PORT") + "/");
+        System.out.println("Server started at http://" + dotenv.get("SERVER_DOMAIN") + ":" + dotenv.get("SERVER_PORT") + "/");
     }
 
     private static void handleLogin(HttpExchange exchange) throws IOException {
@@ -85,7 +85,7 @@ public class Main {
 
             try (Connection conn = getConnection();
                     PreparedStatement stmt = conn.prepareStatement(
-                            "SELECT userId, email, password FROM tbl_users WHERE email=?")) {
+                            "SELECT userId, email, password, roleId FROM tbl_users WHERE email=?")) {
                 stmt.setString(1, email);
                 ResultSet rs = stmt.executeQuery();
 
@@ -99,14 +99,19 @@ public class Main {
                         resp.put("success", true);
                         resp.put("userId", rs.getInt("userId"));
                         resp.put("email", rs.getString("email"));
+                        String roleId = rs.getString("roleId");
+                        resp.put("role", "1".equals(roleId) ? "admin" : "viewer");
                         sendResponse(exchange, 200, gson.toJson(resp));
+                        System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] User " + email + " logged in successfully.");
                         return;
                     }
                 }
+                System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] Failed login attempt for user " + email);
                 sendResponse(exchange, 401, "{\"success\":false,\"error\":\"Invalid credentials\"}");
             }
 
         } catch (Exception e) {
+            System.err.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] Error during login: " + e.getMessage());
             sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
         }
     }
@@ -133,6 +138,7 @@ public class Main {
                     }
 
                     sendResponse(exchange, 200, gson.toJson(employees));
+
                 } catch (SQLException e) {
                     e.printStackTrace();
                     sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
