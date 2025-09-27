@@ -17,18 +17,19 @@ import java.time.format.DateTimeFormatter;
 import com.google.gson.reflect.TypeToken;
 import java.sql.*;
 import java.util.*;
+import helpers.StringHelper;
 
 public class Main {
     private static Dotenv dotenv = Dotenv.load();
 
     private static Gson gson = new GsonBuilder()
-        .registerTypeAdapter(LocalDateTime.class, (JsonSerializer<LocalDateTime>) (src, typeOfSrc, context) ->
-                new JsonPrimitive(src.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
-        )
-        .registerTypeAdapter(LocalDateTime.class, (JsonDeserializer<LocalDateTime>) (json, type, context) ->
-                LocalDateTime.parse(json.getAsString(), DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-        )
-        .create();
+            .registerTypeAdapter(LocalDateTime.class,
+                    (JsonSerializer<LocalDateTime>) (src, typeOfSrc,
+                            context) -> new JsonPrimitive(src.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)))
+            .registerTypeAdapter(LocalDateTime.class,
+                    (JsonDeserializer<LocalDateTime>) (json, type, context) -> LocalDateTime.parse(json.getAsString(),
+                            DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+            .create();
 
     public static void main(String[] args) throws Exception {
 
@@ -66,7 +67,8 @@ public class Main {
 
         server.setExecutor(null);
         server.start();
-        System.out.println("Server started at http://" + dotenv.get("SERVER_DOMAIN") + ":" + dotenv.get("SERVER_PORT") + "/");
+        System.out.println(
+                "Server started at http://" + dotenv.get("SERVER_DOMAIN") + ":" + dotenv.get("SERVER_PORT") + "/");
     }
 
     private static void handleLogin(HttpExchange exchange) throws IOException {
@@ -85,7 +87,8 @@ public class Main {
 
             try (Connection conn = getConnection();
                     PreparedStatement stmt = conn.prepareStatement(
-                            "SELECT userId, email, password, roleId FROM tbl_users WHERE email=?")) {
+                            "SELECT userId, email, password, roleId, CONCAT(firstname, ' ', lastname) AS `name` " +
+                                    "FROM tbl_users WHERE email=?")) {
                 stmt.setString(1, email);
                 ResultSet rs = stmt.executeQuery();
 
@@ -98,20 +101,26 @@ public class Main {
                         Map<String, Object> resp = new HashMap<>();
                         resp.put("success", true);
                         resp.put("userId", rs.getInt("userId"));
+                        resp.put("name", StringHelper.capi capitalizeWords(rs.getString("name")));
                         resp.put("email", rs.getString("email"));
                         String roleId = rs.getString("roleId");
                         resp.put("role", "1".equals(roleId) ? "admin" : "viewer");
                         sendResponse(exchange, 200, gson.toJson(resp));
-                        System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] User " + email + " logged in successfully.");
+                        System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                                + "] User " + email + " logged in successfully.");
                         return;
                     }
                 }
-                System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] Failed login attempt for user " + email);
+                System.out.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                        + "] Failed login attempt for user " + email);
                 sendResponse(exchange, 401, "{\"success\":false,\"error\":\"Invalid credentials\"}");
             }
 
-        } catch (Exception e) {
-            System.err.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "] Error during login: " + e.getMessage());
+        } catch (
+
+        Exception e) {
+            System.err.println("[" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                    + "] Error during login: " + e.getMessage());
             sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
         }
     }
@@ -197,54 +206,64 @@ public class Main {
         try {
             id = Integer.parseInt(idStr);
         } catch (NumberFormatException e) {
-            sendResponse(exchange, 400, "{\"error\":\"Invalid ID\"}");
+            sendResponse(exchange, 400, "{\"error\":\"Invalid id\"}");
             return;
         }
 
         try {
-            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-                try (Connection conn = getConnection();
-                        PreparedStatement stmt = conn
-                                .prepareStatement("SELECT id, name, email FROM tbl_employee WHERE id=?")) {
-                    stmt.setInt(1, id);
-                    ResultSet rs = stmt.executeQuery();
-                    if (rs.next()) {
-                        Map<String, Object> emp = new HashMap<>();
-                        emp.put("id", rs.getInt("id"));
-                        emp.put("name", rs.getString("name"));
-                        emp.put("email", rs.getString("email"));
-                        sendResponse(exchange, 200, gson.toJson(emp));
-                    } else {
-                        sendResponse(exchange, 404, "{\"error\":\"Employee not found\"}");
-                    }
-                }
-            } else if ("PUT".equalsIgnoreCase(exchange.getRequestMethod())) {
+            if ("PUT".equalsIgnoreCase(exchange.getRequestMethod())) {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 Map<String, String> params = gson.fromJson(body, new TypeToken<Map<String, String>>() {
                 }.getType());
 
+                // Only allow updating a single field per request
+                if (params.isEmpty()) {
+                    sendResponse(exchange, 400, "{\"error\":\"No fields to update\"}");
+                    return;
+                }
+                String field = null;
+                String value = null;
+                for (Map.Entry<String, String> entry : params.entrySet()) {
+                    if (!"refno".equalsIgnoreCase(entry.getKey())) {
+                        field = entry.getKey();
+                        value = entry.getValue();
+                        break;
+                    }
+                }
+                if (field == null) {
+                    sendResponse(exchange, 400, "{\"error\":\"No updatable field provided\"}");
+                    return;
+                }
+                String sqlQuery = "UPDATE tbl_employee SET lastname=?, firstname=? WHERE id=?";
+                String lastname = params.getOrDefault("lastname", null);
+                String firstname = params.getOrDefault("firstname", null);
+                // Use id from path
+                Map<String, Object> resp = new HashMap<>();
+                System.out.println("SQL: " + sqlQuery);
+                resp.put("sql", sqlQuery);
+                if (lastname == null || firstname == null) {
+                    resp.put("error", "Missing lastname or firstname in request body");
+                    sendResponse(exchange, 400, gson.toJson(resp));
+                    return;
+                }
                 try (Connection conn = getConnection();
-                        PreparedStatement stmt = conn.prepareStatement(
-                                "UPDATE tbl_employee SET name=?, email=? WHERE id=?")) {
-
-                    stmt.setString(1, params.get("name"));
-                    stmt.setString(2, params.get("email"));
+                        PreparedStatement stmt = conn.prepareStatement(sqlQuery)) {
+                    stmt.setString(1, lastname);
+                    stmt.setString(2, firstname);
                     stmt.setInt(3, id);
                     int affected = stmt.executeUpdate();
-
+                    resp.put("affected", affected);
                     if (affected > 0) {
-                        Map<String, Object> emp = new HashMap<>();
-                        emp.put("id", id);
-                        emp.put("name", params.get("name"));
-                        emp.put("email", params.get("email"));
-                        sendResponse(exchange, 200, gson.toJson(emp));
+                        resp.put("updated", Map.of("id", id, "lastname", lastname, "firstname", firstname));
+                        sendResponse(exchange, 200, gson.toJson(resp));
                     } else {
-                        sendResponse(exchange, 404, "{\"error\":\"Employee not found\"}");
+                        resp.put("error", "Employee not found");
+                        sendResponse(exchange, 404, gson.toJson(resp));
                     }
                 }
             } else if ("DELETE".equalsIgnoreCase(exchange.getRequestMethod())) {
                 try (Connection conn = getConnection();
-                        PreparedStatement stmt = conn.prepareStatement("DELETE FROM tbl_employee WHERE id=?")) {
+                        PreparedStatement stmt = conn.prepareStatement("DELETE FROM tbl_employee WHERE refno=?")) {
 
                     stmt.setInt(1, id);
                     int affected = stmt.executeUpdate();
@@ -260,6 +279,7 @@ public class Main {
         } catch (Exception e) {
             sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
         }
+        return;
     }
 
     private static Connection getConnection() throws Exception {
